@@ -1,4 +1,4 @@
-package com.pdfpro.editor.domain
+package com.propdf.editor.data.repository
 
 import android.content.Context
 import android.graphics.Bitmap
@@ -82,7 +82,7 @@ class PdfOperationsManager @Inject constructor(private val context: Context) {
     }
 
     /**
-     * Compress a PDF (re‑save with default compression).
+     * Compress a PDF (re-save with default compression).
      * @param inputUri URI of the input PDF.
      * @param outputFile Destination file for compressed PDF.
      * @return true if successful.
