@@ -12,6 +12,7 @@
 
 # Keep iText7
 -keep class com.itextpdf.** { *; }
+-keep class org.bouncycastle.** { *; }
 -dontwarn com.itextpdf.**
 
 # Keep PDFBox
