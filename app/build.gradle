@@ -1,15 +1,16 @@
 plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
+    id 'kotlin-kapt'                       // Enables kapt()
     id 'dagger.hilt.android.plugin'
 }
 
 android {
-    namespace 'com.pdfpro.editor'
+    namespace 'com.propdf.editor'          // Must match your actual package
     compileSdk 34
 
     defaultConfig {
-        applicationId "com.pdfpro.editor"
+        applicationId "com.propdf.editor"
         minSdk 21
         targetSdk 34
         versionCode 1
@@ -48,7 +49,7 @@ dependencies {
     implementation 'org.bouncycastle:bcprov-jdk15on:1.70'
     implementation 'org.bouncycastle:bcpkix-jdk15on:1.70'
 
-    // Existing libraries (keep)
+    // Existing libraries (adjust versions if needed)
     implementation 'com.github.tom-roush:pdfbox-android:2.0.27.0'
     implementation 'com.google.mlkit:text-recognition:16.0.0'
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
