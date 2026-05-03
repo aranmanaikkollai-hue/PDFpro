@@ -1,0 +1,48 @@
+workflows:
+  android-release:
+    name: ProPDF Editor Release Build
+    instance_type: mac_mini_m1
+    max_build_duration: 60
+    environment:
+      java: 17
+      vars:
+        GRADLE_VERSION: "8.2"
+    cache:
+      cache_paths:
+        - ~/.gradle/caches
+    scripts:
+      - name: Make gradlew executable
+        script: |
+          chmod +x gradlew
+          ls -la gradlew
+          echo "gradlew is now executable"
+
+      - name: Setup project structure
+        script: |
+          python3 setup_project.py
+
+      - name: Verify ASCII compliance
+        script: |
+          find app/src/main/java -name "*.kt" | while read file; do
+            non_ascii=$(python3 -c "with open('$file', 'rb') as f: print(sum(1 for b in f.read() if b > 127))")
+            if [ "$non_ascii" -gt 0 ]; then
+              echo "ERROR: $file has $non_ascii non-ASCII bytes"
+              exit 1
+            else
+              echo "OK: $file"
+            fi
+          done
+
+      - name: Build release APK
+        script: |
+          ./gradlew assembleRelease
+    artifacts:
+      - app/build/outputs/apk/release/*.apk
+      - app/build/outputs/mapping/release/mapping.txt
+    publishing:
+      email:
+        recipients:
+          - user@example.com
+        notify:
+          success: true
+          failure: true
