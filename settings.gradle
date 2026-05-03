@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         maven { url "https://repo.itextsupport.com/releases" }
     }
 }
-rootProject.name = "proPDFEdit"
+rootProject.name = "PDFpro"
 include ':app'
