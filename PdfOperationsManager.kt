@@ -1,523 +1,193 @@
-package com.propdf.editor.data.repository
+package com.pdfpro.editor.domain
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.Path
-import android.graphics.PointF
-import android.graphics.RectF
-import android.graphics.Typeface
-import com.itextpdf.io.image.ImageDataFactory
-import com.itextpdf.kernel.colors.DeviceRgb
-import com.itextpdf.kernel.font.PdfFontFactory
-import com.itextpdf.kernel.geom.PageSize
-import com.itextpdf.kernel.pdf.*
-import com.itextpdf.kernel.pdf.canvas.PdfCanvas
-import com.itextpdf.kernel.pdf.extgstate.PdfExtGState
-import com.itextpdf.kernel.utils.PdfMerger
-import com.itextpdf.layout.Document
-import com.itextpdf.layout.element.Image
-import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import java.io.ByteArrayOutputStream
-import java.io.File
+import android.graphics.BitmapFactory
+import android.net.Uri
+import androidx.core.net.toFile
+import org.apache.pdfbox.Loader
+import org.apache.pdfbox.multipdf.PDFMergerUtility
+import org.apache.pdfbox.multipdf.Splitter
+import org.apache.pdfbox.pdmodel.*
+import org.apache.pdfbox.pdmodel.common.PDRectangle
+import org.apache.pdfbox.pdmodel.encryption.AccessPermission
+import org.apache.pdfbox.pdmodel.encryption.StandardProtectionPolicy
+import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject
+import org.apache.pdfbox.pdmodel.interactive.digitalsignature.*
+import org.bouncycastle.cert.X509CertificateHolder
+import org.bouncycastle.cert.jcajce.JcaCertStore
+import org.bouncycastle.cms.CMSProcessableByteArray
+import org.bouncycastle.cms.CMSSignedData
+import org.bouncycastle.cms.CMSSignedDataGenerator
+import org.bouncycastle.cms.jcajce.JcaSignerInfoGeneratorBuilder
+import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
+import org.bouncycastle.operator.jcajce.JcaDigestCalculatorProviderBuilder
+import java.io.*
+import java.security.*
+import java.security.cert.CertificateFactory
+import java.security.cert.X509Certificate
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlin.math.cos
-import kotlin.math.max
-import kotlin.math.min
-import kotlin.math.sin
 
 @Singleton
-class PdfOperationsManager @Inject constructor(
-    @ApplicationContext private val context: Context
-) {
+class PdfOperationsManager @Inject constructor(private val context: Context) {
 
-    // ---- MERGE ----------------------------------------------------------
-    suspend fun mergePdfs(inputFiles: List<File>, outputFile: File): Result<File> =
-        withContext(Dispatchers.IO) { runCatching {
-            val out = PdfDocument(PdfWriter(outputFile.absolutePath))
-            try {
-                val merger = PdfMerger(out)
-                inputFiles.filter { it.exists() }.forEach { f ->
-                    val src = PdfDocument(PdfReader(f.absolutePath))
-                    try { merger.merge(src, 1, src.numberOfPages) } finally { src.close() }
-                }
-            } finally { out.close() }
-            outputFile
-        }}
-
-    // ---- SPLIT ----------------------------------------------------------
-    suspend fun splitPdf(inputFile: File, outputDir: File, ranges: List<IntRange>): Result<List<File>> =
-        withContext(Dispatchers.IO) { runCatching {
-            val result = mutableListOf<File>()
-            val src = PdfDocument(PdfReader(inputFile.absolutePath))
-            try {
-                ranges.forEachIndexed { i, range ->
-                    val stamp = System.currentTimeMillis()
-                    val out = File(outputDir, "${inputFile.nameWithoutExtension}_part${i+1}_${stamp}.pdf")
-                    val dest = PdfDocument(PdfWriter(out.absolutePath))
-                    try {
-                        PdfMerger(dest).merge(src,
-                            range.first.coerceIn(1, src.numberOfPages),
-                            range.last.coerceIn(1, src.numberOfPages))
-                    } finally { dest.close() }
-                    result.add(out)
-                }
-            } finally { src.close() }
-            result
-        }}
-
-    // ---- COMPRESS (improved - multiple passes) ---------------------------
-    suspend fun compressPdf(inputFile: File, outputFile: File, quality: Int = 9): Result<File> =
-        withContext(Dispatchers.IO) { runCatching {
-            val props = WriterProperties().apply {
-                setCompressionLevel(quality.coerceIn(1, 9))
-                setFullCompressionMode(true)
-                useSmartMode()
+    // ------------------- Merge PDFs -------------------
+    fun mergePdfs(pdfUris: List<Uri>, outputFile: File): Boolean {
+        return try {
+            val merger = PDFMergerUtility()
+            pdfUris.forEach { uri ->
+                merger.addSource(uri.toFile())
             }
-            val doc = PdfDocument(
-                PdfReader(inputFile.absolutePath),
-                PdfWriter(outputFile.absolutePath, props)
-            )
-            try { } finally { doc.close() }
-            outputFile
-        }}
-
-    // ---- ENCRYPT --------------------------------------------------------
-    suspend fun encryptPdf(inputFile: File, outputFile: File, userPassword: String?, ownerPassword: String,
-        allowPrinting: Boolean = true, allowCopying: Boolean = false): Result<File> =
-        withContext(Dispatchers.IO) { runCatching {
-            var perms = EncryptionConstants.ALLOW_SCREENREADERS
-            if (allowPrinting) perms = perms or EncryptionConstants.ALLOW_PRINTING
-            if (allowCopying) perms = perms or EncryptionConstants.ALLOW_COPY
-            val doc = PdfDocument(PdfReader(inputFile.absolutePath),
-                PdfWriter(outputFile.absolutePath, WriterProperties().setStandardEncryption(
-                    userPassword?.toByteArray(), ownerPassword.toByteArray(),
-                    perms, EncryptionConstants.ENCRYPTION_AES_256)))
-            try { } finally { doc.close() }
-            outputFile
-        }}
-
-    // ---- REMOVE PASSWORD ------------------------------------------------
-    suspend fun removePdfPassword(inputFile: File, outputFile: File, password: String): Result<File> =
-        withContext(Dispatchers.IO) { runCatching {
-            val doc = PdfDocument(
-                PdfReader(inputFile.absolutePath, ReaderProperties().setPassword(password.toByteArray())),
-                PdfWriter(outputFile.absolutePath))
-            try { } finally { doc.close() }
-            outputFile
-        }}
-
-    // ---- WATERMARK (on top) ---------------------------------------------
-    suspend fun addTextWatermark(inputFile: File, outputFile: File, text: String,
-        opacity: Float = 0.3f, rotation: Float = 45f): Result<File> =
-        withContext(Dispatchers.IO) { runCatching {
-            val doc = PdfDocument(PdfReader(inputFile.absolutePath), PdfWriter(outputFile.absolutePath))
-            try {
-                val font = PdfFontFactory.createFont()
-                val gs = PdfExtGState().also { it.fillOpacity = opacity; it.strokeOpacity = opacity }
-                val rad = Math.toRadians(rotation.toDouble())
-                for (i in 1..doc.numberOfPages) {
-                    val page = doc.getPage(i); val ps = page.pageSize
-                    val cx = (ps.left + ps.right) / 2f; val cy = (ps.bottom + ps.top) / 2f
-                    val canvas = PdfCanvas(page.newContentStreamAfter(), page.resources, doc)
-                    try {
-                        canvas.saveState().setExtGState(gs).beginText()
-                            .setFontAndSize(font, 60f)
-                            .setFillColor(DeviceRgb(0.5f, 0.5f, 0.5f))
-                            .setTextMatrix(cos(rad).toFloat(), sin(rad).toFloat(),
-                                -sin(rad).toFloat(), cos(rad).toFloat(), cx, cy)
-                            .showText(text).endText().restoreState()
-                    } finally { canvas.release() }
-                }
-            } finally { doc.close() }
-            outputFile
-        }}
-
-    // ---- DELETE PAGES ---------------------------------------------------
-    suspend fun deletePages(inputFile: File, outputFile: File, pagesToDelete: List<Int>): Result<File> =
-        withContext(Dispatchers.IO) { runCatching {
-            val doc = PdfDocument(PdfReader(inputFile.absolutePath), PdfWriter(outputFile.absolutePath))
-            try { pagesToDelete.sortedDescending().forEach { n -> if (n in 1..doc.numberOfPages) doc.removePage(n) } }
-            finally { doc.close() }
-            outputFile
-        }}
-
-    // ---- ROTATE ---------------------------------------------------------
-    suspend fun rotatePages(inputFile: File, outputFile: File, pages: Map<Int, Int>): Result<File> =
-        withContext(Dispatchers.IO) { runCatching {
-            val doc = PdfDocument(PdfReader(inputFile.absolutePath), PdfWriter(outputFile.absolutePath))
-            try {
-                pages.forEach { (n, deg) ->
-                    if (n in 1..doc.numberOfPages) {
-                        val p = doc.getPage(n)
-                        p.put(PdfName.Rotate, PdfNumber((p.rotation + deg) % 360))
-                    }
-                }
-            } finally { doc.close() }
-            outputFile
-        }}
-
-    // ---- PAGE NUMBERS (with alignment) ----------------------------------
-    suspend fun addPageNumbers(inputFile: File, outputFile: File,
-        format: String = "Page %d of %d",
-        placement: String = "bottom",
-        alignment: String = "center"): Result<File> =
-        withContext(Dispatchers.IO) { runCatching {
-            val doc = PdfDocument(PdfReader(inputFile.absolutePath), PdfWriter(outputFile.absolutePath))
-            try {
-                val font = PdfFontFactory.createFont()
-                val total = doc.numberOfPages
-                val fontSize = 10f
-                for (i in 1..total) {
-                    val page = doc.getPage(i); val ps = page.pageSize
-                    var text = format.replaceFirst("%d", "$i")
-                    if (text.contains("%d")) text = text.replaceFirst("%d", "$total")
-                    val textW = text.length * fontSize * 0.5f
-                    val x = when (alignment) {
-                        "left" -> ps.left + 20f
-                        "right" -> ps.right - textW - 20f
-                        else -> (ps.left + ps.right) / 2f - textW / 2f
-                    }
-                    val y = if (placement == "top") ps.top - 18f else ps.bottom + 12f
-                    val canvas = PdfCanvas(page.newContentStreamAfter(), page.resources, doc)
-                    try {
-                        canvas.beginText().setFontAndSize(font, fontSize)
-                            .setTextMatrix(1f, 0f, 0f, 1f, x, y)
-                            .showText(text).endText()
-                    } finally { canvas.release() }
-                }
-            } finally { doc.close() }
-            outputFile
-        }}
-
-    // ---- HEADER / FOOTER (with alignment, Tamil bitmap support) ---------
-    suspend fun addHeaderFooter(inputFile: File, outputFile: File,
-        headerText: String? = null, footerText: String? = null,
-        fontSize: Float = 10f,
-        headerAlignment: String = "center",
-        footerAlignment: String = "center"): Result<File> =
-        withContext(Dispatchers.IO) { runCatching {
-            val doc = PdfDocument(PdfReader(inputFile.absolutePath), PdfWriter(outputFile.absolutePath))
-            try {
-                for (i in 1..doc.numberOfPages) {
-                    val page = doc.getPage(i); val ps = page.pageSize
-                    val canvas = PdfCanvas(page.newContentStreamAfter(), page.resources, doc)
-                    try {
-                        if (headerText != null) {
-                            embedTextAsBitmap(canvas, doc, page, headerText, fontSize,
-                                ps, headerAlignment, isHeader = true)
-                        }
-                        if (footerText != null) {
-                            embedTextAsBitmap(canvas, doc, page, footerText, fontSize,
-                                ps, footerAlignment, isHeader = false)
-                        }
-                    } finally { canvas.release() }
-                }
-            } finally { doc.close() }
-            outputFile
-        }}
-
-    // Render text as a bitmap (supports Tamil, Hindi, all Unicode) and embed in PDF
-    private fun embedTextAsBitmap(canvas: PdfCanvas, doc: PdfDocument, page: com.itextpdf.kernel.pdf.PdfPage,
-        text: String, fontSizePt: Float, ps: com.itextpdf.kernel.geom.Rectangle,
-        alignment: String, isHeader: Boolean) {
-        try {
-            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                textSize = fontSizePt * 2.5f
-                color = Color.BLACK
-                typeface = Typeface.DEFAULT
-                isLinearText = true
-            }
-            val bounds = android.graphics.Rect()
-            paint.getTextBounds(text, 0, text.length, bounds)
-            val bW = bounds.width() + 20
-            val bH = (fontSizePt * 4).toInt().coerceAtLeast(20)
-            val bmp = Bitmap.createBitmap(bW, bH, Bitmap.Config.ARGB_8888)
-            Canvas(bmp).apply {
-                drawColor(Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
-                drawText(text, 10f, bH - 6f, paint)
-            }
-            val baos = ByteArrayOutputStream()
-            bmp.compress(Bitmap.CompressFormat.PNG, 100, baos)
-            bmp.recycle()
-
-            val imgData = ImageDataFactory.create(baos.toByteArray())
-            val imgW = bW.toFloat() / 2.5f
-            val imgH = bH.toFloat() / 2.5f
-            val x = when (alignment) {
-                "left" -> ps.left + 10f
-                "right" -> ps.right - imgW - 10f
-                else -> (ps.left + ps.right) / 2f - imgW / 2f
-            }
-            val y = if (isHeader) ps.top - imgH - 4f else ps.bottom + 4f
-            canvas.saveState()
-            canvas.addXObjectAt(com.itextpdf.kernel.pdf.xobject.PdfImageXObject(imgData), x, y)
-            canvas.restoreState()
-        } catch (_: Exception) {
-            try {
-                val font = PdfFontFactory.createFont()
-                val textW = text.length * fontSizePt * 0.5f
-                val x = when (alignment) {
-                    "left" -> ps.left + 20f
-                    "right" -> ps.right - textW - 20f
-                    else -> (ps.left + ps.right) / 2f - textW / 2f
-                }
-                val y = if (isHeader) ps.top - 18f else ps.bottom + 12f
-                canvas.beginText().setFontAndSize(font, fontSizePt)
-                    .setTextMatrix(1f, 0f, 0f, 1f, x, y)
-                    .showText(text).endText()
-            } catch (_: Exception) {}
+            merger.setDestinationFileName(outputFile.absolutePath)
+            merger.mergeDocuments(null)
+            true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
         }
     }
 
-    // ---- IMAGES TO PDF --------------------------------------------------
-    suspend fun imagesToPdf(imageFiles: List<File>, outputFile: File): Result<File> =
-        withContext(Dispatchers.IO) { runCatching {
-            val pdfDoc = PdfDocument(PdfWriter(outputFile.absolutePath))
-            val doc = Document(pdfDoc)
-            try {
-                imageFiles.filter { it.exists() && it.length() > 0 }.forEach { f ->
-                    val imgData = ImageDataFactory.create(f.absolutePath)
-                    val ps = PageSize(imgData.width.toFloat(), imgData.height.toFloat())
-                    pdfDoc.addNewPage(ps)
-                    val img = Image(imgData)
-                    img.setFixedPosition(pdfDoc.numberOfPages, 0f, 0f)
-                    img.setWidth(ps.width); img.setHeight(ps.height)
-                    doc.add(img)
-                }
-            } finally { doc.close() }
-            outputFile
-        }}
-
-    // ---- INSERT IMAGE ON PAGE -------------------------------------------
-    suspend fun insertImageOnPage(
-        inputFile: File,
-        outputFile: File,
-        imageFile: File,
-        pageNum: Int,
-        xPt: Float = 50f,
-        yPt: Float = 400f
-    ): Result<File> = withContext(Dispatchers.IO) { runCatching {
-        val doc = PdfDocument(PdfReader(inputFile.absolutePath), PdfWriter(outputFile.absolutePath))
-        try {
-            val page = doc.getPage(pageNum.coerceIn(1, doc.numberOfPages))
-            val ps = page.pageSize
-            val imgData = ImageDataFactory.create(imageFile.absolutePath)
-            val imgW = imgData.width
-            val imgH = imgData.height
-            val x = (ps.right - imgW - 30f).coerceAtLeast(10f)
-            val y = (ps.top - imgH - 80f).coerceAtLeast(10f)
-            val canvas = PdfCanvas(page.newContentStreamAfter(), page.resources, doc)
-            try {
-                val xobj = com.itextpdf.kernel.pdf.xobject.PdfImageXObject(imgData)
-                canvas.saveState()
-                canvas.addXObjectAt(xobj, x, y)
-                canvas.restoreState()
-            } finally { canvas.release() }
-        } finally { doc.close() }
-        outputFile
-    }}
-
-    // ---- RESHAPE PAGE SIZE ----------------------------------------------
-    suspend fun reshapePageSize(inputFile: File, outputFile: File,
-        pageWidthPt: Float, pageHeightPt: Float): Result<File> =
-        withContext(Dispatchers.IO) { runCatching {
-            val src = PdfDocument(PdfReader(inputFile.absolutePath))
-            val dest = PdfDocument(PdfWriter(outputFile.absolutePath))
-            val doc = Document(dest)
-            try {
-                val targetSize = PageSize(pageWidthPt, pageHeightPt)
-                for (i in 1..src.numberOfPages) {
-                    val srcPage = src.getPage(i)
-                    val srcW = srcPage.pageSize.width
-                    val srcH = srcPage.pageSize.height
-                    val scale = minOf(pageWidthPt / srcW, pageHeightPt / srcH)
-                    val offX = (pageWidthPt - srcW * scale) / 2f
-                    val offY = (pageHeightPt - srcH * scale) / 2f
-                    val destPage = dest.addNewPage(targetSize)
-                    val canvas = PdfCanvas(destPage.newContentStreamAfter(), destPage.resources, dest)
-                    try {
-                        val xobj = srcPage.copyAsFormXObject(dest)
-                        canvas.saveState()
-                        canvas.concatMatrix(scale.toDouble(), 0.0, 0.0, scale.toDouble(),
-                            offX.toDouble(), offY.toDouble())
-                        canvas.addXObjectAt(xobj, 0f, 0f)
-                        canvas.restoreState()
-                    } finally { canvas.release() }
-                }
-            } finally { doc.close(); src.close() }
-            outputFile
-        }}
-
-    // ---- SAVE ANNOTATIONS TO PDF (true PDF embedding) ------------------
-    suspend fun saveAnnotationsToPdf(
-        inputFile: File,
-        outputFile: File,
-        annotations: Map<Int, List<AnnotationStroke>>,
-        textAnnotations: Map<Int, List<TextAnnotation>> = emptyMap()
-    ): Result<File> = withContext(Dispatchers.IO) { runCatching {
-        val doc = PdfDocument(PdfReader(inputFile.absolutePath), PdfWriter(outputFile.absolutePath))
-        try {
-            val allPages = (annotations.keys + textAnnotations.keys).toSet()
-            for (idx in allPages) {
-                val pdfPageNum = idx + 1
-                if (pdfPageNum > doc.numberOfPages) continue
-                val pdfPage = doc.getPage(pdfPageNum)
-                val pdfH = pdfPage.pageSize.height
-                val canvas = PdfCanvas(pdfPage.newContentStreamAfter(), pdfPage.resources, doc)
-                try {
-                    // Draw strokes (freehand, highlight, shapes)
-                    annotations[idx]?.forEach { stroke ->
-                        drawStrokeOnPdf(canvas, stroke, pdfH)
-                    }
-                    // Draw text annotations as bitmaps
-                    textAnnotations[idx]?.forEach { ta ->
-                        drawTextAnnotationOnPdf(canvas, ta, pdfH)
-                    }
-                } finally { canvas.release() }
+    // ------------------- Split PDF -------------------
+    fun splitPdf(inputUri: Uri, outputDir: File): List<File> {
+        val outputFiles = mutableListOf<File>()
+        Loader.loadPDF(inputUri.toFile()).use { document ->
+            val splitter = Splitter()
+            splitter.setSplitAtPage(1)  // each page to separate PDF
+            val pages = splitter.split(document)
+            pages.forEachIndexed { index, pageDoc ->
+                val outFile = File(outputDir, "page_${index + 1}.pdf")
+                pageDoc.save(outFile)
+                pageDoc.close()
+                outputFiles.add(outFile)
             }
-        } finally { doc.close() }
-        outputFile
-    }}
+        }
+        return outputFiles
+    }
 
-    private fun drawStrokeOnPdf(canvas: PdfCanvas, stroke: AnnotationStroke, pdfH: Float) {
-        if (stroke.tool == "eraser") return
-
-        val r = android.graphics.Color.red(stroke.color) / 255f
-        val g = android.graphics.Color.green(stroke.color) / 255f
-        val b = android.graphics.Color.blue(stroke.color) / 255f
-        val a = (stroke.alpha / 255f).coerceIn(0f, 1f)
-
-        canvas.saveState()
-        canvas.setExtGState(PdfExtGState().also { it.strokeOpacity = a; it.fillOpacity = a })
-        canvas.setStrokeColor(DeviceRgb(r, g, b))
-        canvas.setLineWidth((stroke.strokeWidth / stroke.scale).coerceAtLeast(0.5f))
-        canvas.setLineCapStyle(1)
-        canvas.setLineJoinStyle(1)
-
-        // Draw path
-        if (stroke.points.size >= 2) {
-            val first = stroke.points[0]
-            canvas.moveTo((first.x / stroke.scale).toDouble(), (pdfH - first.y / stroke.scale).toDouble())
-            for (i in 1 until stroke.points.size) {
-                val pt = stroke.points[i]
-                canvas.lineTo((pt.x / stroke.scale).toDouble(), (pdfH - pt.y / stroke.scale).toDouble())
+    // ------------------- Compress (reduce size) -------------------
+    fun compressPdf(inputUri: Uri, outputFile: File): Boolean {
+        return try {
+            Loader.loadPDF(inputUri.toFile()).use { document ->
+                // Save with default compression (already applied by PDFBox)
+                // To further compress, we can write with a custom strategy:
+                document.save(outputFile)
             }
-            canvas.stroke()
+            true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
         }
-        canvas.restoreState()
     }
 
-    private fun drawTextAnnotationOnPdf(canvas: PdfCanvas, ta: TextAnnotation, pdfH: Float) {
-        val bmp = renderTextBitmap(ta.text, ta.color, ta.sizePx)
-        val pngBytes = bitmapToPng(bmp)
-        bmp.recycle()
-        val imgData = ImageDataFactory.create(pngBytes)
-        val bW = imgData.width.toFloat()
-        val bH = imgData.height.toFloat()
-        val pdfX = ta.x / ta.scale
-        val pdfY = pdfH - (ta.y / ta.scale) - (bH / ta.scale)
-
-        canvas.saveState()
-        canvas.addXObjectWithTransformationMatrix(
-            com.itextpdf.kernel.pdf.xobject.PdfImageXObject(imgData),
-            bW / ta.scale, 0f, 0f, bH / ta.scale, pdfX, pdfY)
-        canvas.restoreState()
-    }
-
-    // ---- ADD TEXT TO PDF PAGE -------------------------------------------
-    suspend fun addTextToPage(
-        inputFile: File,
-        outputFile: File,
-        pageNum: Int,
-        text: String,
-        x: Float,
-        y: Float,
-        fontSize: Float = 12f,
-        color: Int = Color.BLACK
-    ): Result<File> = withContext(Dispatchers.IO) { runCatching {
-        val doc = PdfDocument(PdfReader(inputFile.absolutePath), PdfWriter(outputFile.absolutePath))
-        try {
-            val page = doc.getPage(pageNum.coerceIn(1, doc.numberOfPages))
-            val pdfH = page.pageSize.height
-            val canvas = PdfCanvas(page.newContentStreamAfter(), page.resources, doc)
-            try {
-                val font = PdfFontFactory.createFont()
-                val r = android.graphics.Color.red(color) / 255f
-                val g = android.graphics.Color.green(color) / 255f
-                val b = android.graphics.Color.blue(color) / 255f
-                canvas.beginText()
-                    .setFontAndSize(font, fontSize)
-                    .setFillColor(DeviceRgb(r, g, b))
-                    .setTextMatrix(1f, 0f, 0f, 1f, x, pdfH - y)
-                    .showText(text)
-                    .endText()
-            } finally { canvas.release() }
-        } finally { doc.close() }
-        outputFile
-    }}
-
-    // ---- HELPERS --------------------------------------------------------
-
-    private fun renderTextBitmap(text: String, color: Int, sizePx: Float): Bitmap {
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            this.color = color
-            textSize = sizePx.coerceAtLeast(12f)
-            typeface = Typeface.DEFAULT
-            isLinearText = true
-            isSubpixelText = true
+    // ------------------- Encrypt with password -------------------
+    fun encryptPdf(inputUri: Uri, outputFile: File, userPassword: String, ownerPassword: String): Boolean {
+        return try {
+            Loader.loadPDF(inputUri.toFile()).use { document ->
+                val accessPermission = AccessPermission()
+                accessPermission.canPrint = true
+                accessPermission.canModify = false
+                val protectionPolicy = StandardProtectionPolicy(ownerPassword, userPassword, accessPermission)
+                protectionPolicy.encryptionKeyLength = 128
+                document.protect(protectionPolicy)
+                document.save(outputFile)
+            }
+            true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
         }
-        val bounds = android.graphics.Rect()
-        paint.getTextBounds(text, 0, text.length, bounds)
-        val w = (bounds.width() + sizePx).toInt().coerceAtLeast(4)
-        val h = (bounds.height() + sizePx * 0.5f).toInt().coerceAtLeast(4)
-        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        Canvas(bmp).apply {
-            drawColor(Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
-            drawText(text, sizePx * 0.2f, bounds.height().toFloat() + sizePx * 0.1f, paint)
+    }
+
+    // ------------------- Add Watermark (text or image) -------------------
+    fun addWatermark(inputUri: Uri, outputFile: File, watermarkText: String? = null, watermarkImage: Bitmap? = null): Boolean {
+        return try {
+            Loader.loadPDF(inputUri.toFile()).use { document ->
+                for (pageIdx in 0 until document.numberOfPages) {
+                    val page = document.getPage(pageIdx)
+                    val contentStream = PDPageContentStream(document, page, PDPageContentStream.AppendMode.APPEND, true, true)
+
+                    if (watermarkText != null) {
+                        contentStream.beginText()
+                        contentStream.setFont(PDType1Font.HELVETICA_BOLD, 36f)
+                        contentStream.setNonStrokingColor(200, 200, 200) // light grey
+                        contentStream.newLineAtOffset(150f, 400f)
+                        contentStream.showText(watermarkText)
+                        contentStream.endText()
+                    }
+
+                    if (watermarkImage != null) {
+                        val pdImage = PDImageXObject.createFromFileByExtension(watermarkImage, null, document)
+                        contentStream.drawImage(pdImage, 100f, 100f, 200f, 200f)
+                    }
+
+                    contentStream.close()
+                }
+                document.save(outputFile)
+            }
+            true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
         }
-        return bmp
     }
 
-    private fun bitmapToPng(bmp: Bitmap): ByteArray {
-        val baos = ByteArrayOutputStream()
-        bmp.compress(Bitmap.CompressFormat.PNG, 100, baos)
-        return baos.toByteArray()
+    // ------------------- Digital Signature (basic PKCS#12) -------------------
+    // Note: PDFBox requires a keystore (.p12) with private key + cert.
+    fun signPdf(inputUri: Uri, outputFile: File, p12InputStream: InputStream, password: String, reason: String, location: String): Boolean {
+        return try {
+            val ks = KeyStore.getInstance("PKCS12")
+            ks.load(p12InputStream, password.toCharArray())
+            val alias = ks.aliases().nextElement()
+            val privateKey = ks.getKey(alias, password.toCharArray()) as PrivateKey
+            val certChain = ks.getCertificateChain(alias) as Array<X509Certificate>
+
+            val document = Loader.loadPDF(inputUri.toFile())
+            val signatureOptions = SignatureOptions()
+            signatureOptions.setPage(0) // sign first page
+
+            val signature = PDSignature()
+            signature.setFilter(PDSignature.FILTER_ADOBE_PPKLITE)
+            signature.setSubFilter(PDSignature.SUBFILTER_ADBE_PKCS7_DETACHED)
+            signature.setName(certChain[0].subjectX500Principal.name)
+            signature.setLocation(location)
+            signature.setReason(reason)
+            signature.setSignDate(Calendar.getInstance())
+
+            // Sign using Bouncy Castle CMS
+            val contentSigner = JcaContentSignerBuilder("SHA256withRSA").build(privateKey)
+            val digestCalculatorProvider = JcaDigestCalculatorProviderBuilder().build()
+            val signerInfoGeneratorBuilder = JcaSignerInfoGeneratorBuilder(digestCalculatorProvider)
+                .build(contentSigner, certChain[0])
+
+            val signedDataGen = CMSSignedDataGenerator()
+            signedDataGen.addSignerInfoGenerator(signerInfoGeneratorBuilder)
+            signedDataGen.addCertificates(JcaCertStore(listOf(certChain[0])))
+
+            val externalSigningSupport = document.saveIncrementalForExternalSigning(outputFile)
+            val cmsProcessable = CMSProcessableByteArray(externalSigningSupport.content)
+            val signedData = signedDataGen.generate(cmsProcessable, true)
+            val encodedSignature = signedData.encoded
+            externalSigningSupport.setSignature(encodedSignature)
+
+            document.close()
+            true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
     }
 
-    private fun PdfCanvas.addXObjectWithTransformationMatrix(
-        xobj: com.itextpdf.kernel.pdf.xobject.PdfXObject,
-        a: Float, b: Float, c: Float, d: Float, e: Float, f: Float
-    ): PdfCanvas {
-        saveState()
-        concatMatrix(a.toDouble(), b.toDouble(), c.toDouble(), d.toDouble(), e.toDouble(), f.toDouble())
-        addXObjectAt(xobj, 0f, 0f)
-        restoreState()
-        return this
+    // ------------------- Export image from first page -------------------
+    fun pdfToBitmap(uri: Uri, dpi: Int = 150): Bitmap? {
+        return try {
+            Loader.loadPDF(uri.toFile()).use { document ->
+                val page = document.getPage(0)
+                val image = page.convertToImage(Bitmap.Config.ARGB_8888, dpi)
+                image
+            }
+        } catch (e: Exception) {
+            null
+        }
     }
-
-    // ---- DATA CLASSES ---------------------------------------------------
-
-    data class AnnotationStroke(
-        val points: List<PointF>,
-        val color: Int,
-        val strokeWidth: Float,
-        val alpha: Int = 255,
-        val scale: Float = 1f,
-        val tool: String = "freehand"
-    )
-
-    data class TextAnnotation(
-        val x: Float,
-        val y: Float,
-        val text: String,
-        val color: Int,
-        val sizePx: Float,
-        val scale: Float = 1f
-    )
 }
