@@ -120,22 +120,35 @@ class ToolsActivity : AppCompatActivity() {
         }
 
         val tools = listOf(
-            Triple("Merge", "Combine multiple PDFs", android.R.drawable.ic_menu_agenda) { startMerge() },
-            Triple("Split", "Extract pages", android.R.drawable.ic_menu_crop) { startSplit() },
-            Triple("Compress", "Reduce file size", android.R.drawable.ic_menu_save) { startCompress() },
-            Triple("Protect", "Encrypt with password", android.R.drawable.ic_lock_lock) { startEncrypt() },
-            Triple("Watermark", "Add text watermark", android.R.drawable.ic_menu_edit) { startWatermark() },
-            Triple("Rotate", "Rotate pages", android.R.drawable.ic_menu_rotate) { startRotate() },
-            Triple("Delete Pages", "Remove pages", android.R.drawable.ic_menu_delete) { startDeletePages() },
-            Triple("Page Numbers", "Add numbering", android.R.drawable.ic_menu_sort_by_size) { startPageNumbers() },
-            Triple("Header/Footer", "Add headers", android.R.drawable.ic_menu_info_details) { startHeaderFooter() },
-            Triple("Images to PDF", "Convert images", android.R.drawable.ic_menu_gallery) { startImagesToPdf() }
+                    data class ToolItem(val title: String, val desc: String, val icon: Int, val action: () -> Unit)
+
+        val tools = listOf(
+            ToolItem("Merge", "Combine multiple PDFs", android.R.drawable.ic_menu_agenda) { startMerge() },
+            ToolItem("Split", "Extract pages", android.R.drawable.ic_menu_crop) { startSplit() },
+            ToolItem("Compress", "Reduce file size", android.R.drawable.ic_menu_save) { startCompress() },
+            ToolItem("Protect", "Encrypt with password", android.R.drawable.ic_lock_lock) { startEncrypt() },
+            ToolItem("Watermark", "Add text watermark", android.R.drawable.ic_menu_edit) { startWatermark() },
+            ToolItem("Rotate", "Rotate pages", android.R.drawable.ic_menu_rotate) { startRotate() },
+            ToolItem("Delete Pages", "Remove pages", android.R.drawable.ic_menu_delete) { startDeletePages() },
+            ToolItem("Page Numbers", "Add numbering", android.R.drawable.ic_menu_sort_by_size) { startPageNumbers() },
+            ToolItem("Header/Footer", "Add headers", android.R.drawable.ic_menu_info_details) { startHeaderFooter() },
+            ToolItem("Images to PDF", "Convert images", android.R.drawable.ic_menu_gallery) { startImagesToPdf() }
         )
 
         // Lay out in rows of 2
         tools.chunked(2).forEach { rowItems ->
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            rowItems.forEach { (title, desc, icon, action) ->
+            rowItems.forEach { tool ->
+                row.addView(buildToolCard(tool.title, tool.desc, tool.icon, tool.action))
+            }
+            // If odd number in last row, add spacer
+            if (rowItems.size == 1) {
+                row.addView(FrameLayout(this).apply {
+                    layoutParams = LinearLayout.LayoutParams(0, dp(120), 1f)
+                })
+            }
+            grid.addView(row)
+        }
                 row.addView(buildToolCard(title, desc, icon, action))
             }
             // If odd number in last row, add spacer
