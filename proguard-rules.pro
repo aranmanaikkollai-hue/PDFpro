@@ -24,8 +24,11 @@
 -dontwarn com.google.mlkit.**
 
 # Keep BouncyCastle
+# ProGuard rules for BouncyCastle
 -keep class org.bouncycastle.** { *; }
 -dontwarn org.bouncycastle.**
+-keep class com.tom_roush.** { *; }
+-dontwarn com.tom_roush.**
 
 # Keep Kotlin coroutines
 -keepnames class kotlinx.coroutines.internal.MainDispatcherFactory {}
