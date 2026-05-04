@@ -1,0 +1,86 @@
+workflows:
+  android-debug:
+    name: ProPDF Editor Premium Build
+    instance_type: mac_mini_m1
+    max_build_duration: 60
+    environment:
+      java: 17
+      vars:
+        GRADLE_VERSION: "8.2"
+    cache:
+      cache_paths:
+        - ~/.gradle/caches
+    scripts:
+      - name: Make gradlew executable
+        script: |
+          chmod +x gradlew
+          echo "gradlew is now executable"
+
+      - name: Setup project structure
+        script: |
+          mkdir -p app/src/main/java/com/propdf/editor/ui/viewer
+          mkdir -p app/src/main/java/com/propdf/editor/ui/tools
+          mkdir -p app/src/main/java/com/propdf/editor/ui/scanner
+          mkdir -p app/src/main/java/com/propdf/editor/ui/main
+          mkdir -p app/src/main/java/com/propdf/editor/ui/settings
+          mkdir -p app/src/main/java/com/propdf/editor/data/repository
+          mkdir -p app/src/main/java/com/propdf/editor/data/local
+          mkdir -p app/src/main/java/com/propdf/editor/di
+          mkdir -p app/src/main/java/com/propdf/editor/utils
+          mkdir -p app/src/main/res/layout
+          mkdir -p app/src/main/res/values
+          mkdir -p app/src/main/res/menu
+          mkdir -p app/src/main/res/xml
+          mkdir -p app/src/main/res/mipmap
+
+          # Copy all source files
+          for file in *.kt; do
+            if [ -f "$file" ]; then
+              case "$file" in
+                ViewerActivity.kt) cp "$file" app/src/main/java/com/propdf/editor/ui/viewer/ ;;
+                ViewerViewmodel.kt) cp "$file" app/src/main/java/com/propdf/editor/ui/viewer/ViewerViewModel.kt ;;
+                PdfPageAdapter.kt) cp "$file" app/src/main/java/com/propdf/editor/ui/viewer/ ;;
+                AnnotatedPageView.kt) cp "$file" app/src/main/java/com/propdf/editor/ui/viewer/ ;;
+                AnnotationCanvasView.kt) cp "$file" app/src/main/java/com/propdf/editor/ui/viewer/ ;;
+                ToolsActivity.kt) cp "$file" app/src/main/java/com/propdf/editor/ui/tools/ ;;
+                DocumentScannerActivity.kt) cp "$file" app/src/main/java/com/propdf/editor/ui/scanner/ ;;
+                MainActivity.kt) cp "$file" app/src/main/java/com/propdf/editor/ui/main/ ;;
+                SettingsActivity.kt) cp "$file" app/src/main/java/com/propdf/editor/ui/settings/ 2>/dev/null || true ;;
+                ProPDFApp.kt) cp "$file" app/src/main/java/com/propdf/editor/ ;;
+                AiSummaryManager.kt|OcrManager.kt|PdfOperationsManager.kt|SignatureManager.kt|PdfRepository.kt|RecentFilesRepository.kt|PdfRendererHelper.kt|TextExtractor.kt|ScannerProcessor.kt) 
+                  cp "$file" app/src/main/java/com/propdf/editor/data/repository/ 2>/dev/null || true ;;
+                RecentFileEntity.kt|RecentFilesDao.kt|RecentFilesDatabase.kt) 
+                  cp "$file" app/src/main/java/com/propdf/editor/data/local/ 2>/dev/null || true ;;
+                AppModule.kt) cp "$file" app/src/main/java/com/propdf/editor/di/ ;;
+                FileHelper.kt|Utils.kt) cp "$file" app/src/main/java/com/propdf/editor/utils/ 2>/dev/null || true ;;
+              esac
+            fi
+          done
+
+          # Copy resources
+          cp -r res/layout/* app/src/main/res/layout/ 2>/dev/null || true
+          cp -r res/values/* app/src/main/res/values/ 2>/dev/null || true
+          cp -r res/menu/* app/src/main/res/menu/ 2>/dev/null || true
+          cp -r res/xml/* app/src/main/res/xml/ 2>/dev/null || true
+          cp -r res/mipmap/* app/src/main/res/mipmap/ 2>/dev/null || true
+
+          cp AndroidManifest.xml app/src/main/AndroidManifest.xml
+          cp app_build.gradle app/build.gradle
+
+          echo "Files copied:"
+          find app/src/main/java -name "*.kt" | sort
+
+      - name: Build debug APK
+        script: |
+          ./gradlew assembleDebug --stacktrace
+
+    artifacts:
+      - app/build/outputs/apk/debug/*.apk
+
+    publishing:
+      email:
+        recipients:
+          - user@example.com
+        notify:
+          success: true
+          failure: true
