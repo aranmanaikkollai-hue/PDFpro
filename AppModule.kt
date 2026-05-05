@@ -65,6 +65,4 @@ object AppModule {
     fun provideRecentFilesDao(
         db: RecentFilesDatabase
     ): RecentFilesDao = db.recentFilesDao()
-
-    // FileHelper is @Inject constructor - Dagger auto-provides it
 }
