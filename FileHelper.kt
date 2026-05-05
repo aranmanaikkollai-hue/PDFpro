@@ -54,7 +54,7 @@ class FileHelper @Inject constructor(
 
         fun isPdf(file: File): Boolean {
             return file.extension.equals("pdf", ignoreCase = true) ||
-                   file.name.endsWith(".pdf", ignoreCase = true)
+                    file.name.endsWith(".pdf", ignoreCase = true)
         }
     }
 
